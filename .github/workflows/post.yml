@@ -1,0 +1,42 @@
+name: Update Data Harga Emas
+
+on:
+  schedule:
+    # Setiap 10 menit
+    - cron: '*/10 * * * *'
+
+  workflow_dispatch:
+
+jobs:
+  update-data:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write   # supaya bisa commit data.json balik ke repo
+
+    steps:
+
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Fetch harga & simpan data.json
+        env:
+          EXCHANGE_API_KEY: ${{ secrets.EXCHANGE_API_KEY }}
+        run: python main.py
+
+      - name: Commit data.json
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data.json
+          git diff --staged --quiet || git commit -m "Update data.json [skip ci]"
+          git push
