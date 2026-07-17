@@ -12,8 +12,10 @@ from config import (
 
 TROY_OZ_TO_GRAM    = 31.1035
 FUTURES_SPOT_DIFF  = 17.0  # Koreksi selisih Futures vs Spot
-JAM_ACUAN   = 3   # Jam acuan perbandingan harga (WIB) — ubah cukup di sini
-MENIT_ACUAN = 55  # Menit acuan (0-59) — ubah di sini jika perlu
+JAM_ACUAN          = 3     # Jam acuan baseline (WIB)
+MENIT_ACUAN        = 55    # Menit acuan baseline
+JAM_GANTI_ACUAN    = 8     # Acuan berganti tanggal saat melewati jam ini
+MENIT_GANTI_ACUAN  = 55    # Menit ganti acuan
 
 
 def fetch_xauusd() -> tuple[float, float]:
@@ -21,9 +23,17 @@ def fetch_xauusd() -> tuple[float, float]:
     Ambil harga XAUUSD realtime dari Yahoo Finance (GC=F = Gold Futures).
     Dikurangi FUTURES_SPOT_DIFF untuk mendekati harga spot TradingView.
 
-    Acuan perbandingan: SELALU jam JAM_ACUAN WIB.
-    - Jam JAM_ACUAN:00 - 23:59 WIB → acuan hari ini jam JAM_ACUAN:00
-    - Jam 00:00 - (JAM_ACUAN-1):59 WIB → acuan KEMARIN jam JAM_ACUAN:00
+    Logika acuan:
+    - Jam 08:00 - 23:59 WIB → acuan HARI INI jam 04:00
+    - Jam 00:00 - 07:59 WIB → acuan KEMARIN jam 04:00
+
+    Contoh:
+    - 17 Jul 07:21 → acuan 16 Jul 04:00
+    - 17 Jul 11:00 → acuan 17 Jul 04:00
+    - 18 Jul 03:00 → acuan 17 Jul 04:00
+    - 18 Jul 09:00 → acuan 18 Jul 04:00
+
+    Baseline berlaku selama ~28 jam (04:00 hari ini s/d 08:00 keesokan harinya).
 
     Fallback berlapis jika candle jam acuan tidak ditemukan:
     1. Cari candle jam JAM_ACUAN WIB manapun yang paling baru (5 hari ke belakang)
@@ -36,18 +46,23 @@ def fetch_xauusd() -> tuple[float, float]:
         info   = ticker.fast_info
         price  = float(info["last_price"]) - FUTURES_SPOT_DIFF
 
-        hist = ticker.history(period="5d", interval="1h")
+        hist = ticker.history(period="5d", interval="5m")
         hist.index = hist.index.tz_convert(WIB)
 
         now_wib = datetime.now(WIB)
-        waktu_acuan_menit = JAM_ACUAN * 60 + MENIT_ACUAN
+
+        # Tentukan tanggal acuan:
+        # Sudah lewat JAM_GANTI_ACUAN:MENIT_GANTI_ACUAN → pakai hari ini
+        # Belum lewat → pakai kemarin
+        waktu_ganti_menit    = JAM_GANTI_ACUAN * 60 + MENIT_GANTI_ACUAN
         waktu_sekarang_menit = now_wib.hour * 60 + now_wib.minute
 
-        if waktu_sekarang_menit >= waktu_acuan_menit:
+        if waktu_sekarang_menit >= waktu_ganti_menit:
             tanggal_acuan = now_wib.date()
         else:
             tanggal_acuan = (now_wib - timedelta(days=1)).date()
 
+        # Cari candle jam JAM_ACUAN:MENIT_ACUAN WIB di tanggal acuan
         target = hist[
             (hist.index.date == tanggal_acuan) &
             (hist.index.hour == JAM_ACUAN) &
@@ -55,20 +70,24 @@ def fetch_xauusd() -> tuple[float, float]:
             (hist.index.minute < MENIT_ACUAN + 5)
         ]
 
-        
         if not target.empty:
             prev_close = float(target["Close"].iloc[0]) - FUTURES_SPOT_DIFF
         else:
+            # Fallback 1: cari candle jam acuan manapun yang paling baru (5 hari ke belakang)
             candidates = hist[hist.index.hour == JAM_ACUAN]
             if not candidates.empty:
                 prev_close = float(candidates["Close"].iloc[-1]) - FUTURES_SPOT_DIFF
             else:
+                # Fallback 2: pakai candle paling awal yang tersedia di histori
                 prev_close = float(hist["Close"].iloc[0]) - FUTURES_SPOT_DIFF
 
-        print(f"[fetch] XAUUSD: ${price:,.2f} | Acuan jam {JAM_ACUAN:02d}:00 WIB ({tanggal_acuan}): ${prev_close:,.2f}")
+        print(f"[fetch] XAUUSD       : ${price:,.2f}")
+        print(f"[fetch] Baseline dari : {tanggal_acuan} jam {JAM_ACUAN:02d}:{MENIT_ACUAN:02d} WIB")
+        print(f"[fetch] Harga baseline: ${prev_close:,.2f}")
         return price, prev_close
     except Exception as e:
         print(f"[fetch] ERROR ambil XAUUSD: {e}")
+        # Fallback ke history jika fast_info gagal
         try:
             ticker     = yf.Ticker("GC=F")
             hist       = ticker.history(period="2d", interval="1d")
@@ -97,13 +116,18 @@ def fetch_usd_idr() -> float:
 
 def get_price_data() -> dict:
     """
-    Hitung semua data harga yang diperlukan.
+    Hitung semua data harga yang diperlukan untuk generate gambar.
 
     Returns dict berisi:
-    - xauusd_oz, xauusd_gram, usd_idr, idr_per_gram
-    - antam_jual, antam_buyback
-    - change_pct, change_idr
-    - timestamp (WIB)
+    - xauusd_oz      : harga XAU per troy ounce (USD)
+    - xauusd_gram    : harga XAU per gram (USD)
+    - usd_idr        : kurs USD ke IDR
+    - idr_per_gram   : harga emas per gram (IDR)
+    - antam_jual     : estimasi harga jual Antam per gram (IDR)
+    - antam_buyback  : estimasi harga buyback Antam per gram (IDR)
+    - change_pct     : perubahan harga (%) vs prev close
+    - change_idr     : selisih harga IDR per gram vs kemarin
+    - timestamp      : waktu fetch (WIB)
     """
 
     xauusd_oz, prev_close = fetch_xauusd()
@@ -115,6 +139,7 @@ def get_price_data() -> dict:
     antam_jual    = idr_per_gram * ANTAM_JUAL_MARKUP
     antam_buyback = idr_per_gram * ANTAM_BUYBACK_MARKUP
 
+    # Hitung perubahan vs prev close
     if prev_close and prev_close > 0:
         change_oz  = xauusd_oz - prev_close
         change_pct = (change_oz / prev_close) * 100
