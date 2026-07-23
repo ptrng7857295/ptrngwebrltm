@@ -1,10 +1,10 @@
 {
-  "xauusd_oz": 4111.1,
-  "idr_per_gram": 2366458,
-  "antam_jual": 2636234,
-  "antam_buyback": 2387756,
+  "xauusd_oz": 4111.0,
+  "idr_per_gram": 2366400,
+  "antam_jual": 2636170,
+  "antam_buyback": 2387698,
   "change_pct": -0.17,
-  "change_idr": -3972,
+  "change_idr": -4029,
   "usd_idr": 17904,
-  "timestamp": "23 Jul 2026 11:00 WIB"
+  "timestamp": "23 Jul 2026 11:05 WIB"
 }
